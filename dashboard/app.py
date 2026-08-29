@@ -147,9 +147,7 @@ if page == "Risk Overview":
 
         col1.metric(
             "High-risk cases shown",
-            queue[
-                "cases_returned"
-            ],
+            queue["cases_returned"],
         )
 
         exposure = queue[
@@ -163,9 +161,7 @@ if page == "Risk Overview":
 
         col3.metric(
             "Detected abuse rings",
-            rings[
-                "count"
-            ],
+            rings["count"],
         )
 
         detection_rate = metrics[
@@ -184,9 +180,7 @@ if page == "Risk Overview":
         )
 
         queue_df = pd.DataFrame(
-            queue[
-                "cases"
-            ]
+            queue["cases"]
         )
 
         if not queue_df.empty:
@@ -209,31 +203,22 @@ if page == "Risk Overview":
                 "Cluster",
             ]
 
-            display_df[
-                "Risk Score"
-            ] = (
+            display_df["Risk Score"] = (
                 display_df[
                     "Risk Score"
-                ]
-                .round(2)
+                ].round(2)
             )
 
-            display_df[
-                "Return Rate %"
-            ] = (
+            display_df["Return Rate %"] = (
                 display_df[
                     "Return Rate %"
-                ]
-                .round(2)
+                ].round(2)
             )
 
-            display_df[
-                "Exposure ₹"
-            ] = (
+            display_df["Exposure ₹"] = (
                 display_df[
                     "Exposure ₹"
-                ]
-                .round(2)
+                ].round(2)
             )
 
             st.dataframe(
@@ -318,6 +303,10 @@ elif page == "Customer Investigation":
                 "recommendation"
             ]
 
+            # =================================================
+            # INVESTIGATION SUMMARY
+            # =================================================
+
             st.subheader(
                 f"Investigation: "
                 f"{result['customer_id']}"
@@ -384,6 +373,10 @@ elif page == "Customer Investigation":
             )
 
             st.divider()
+
+            # =================================================
+            # BEHAVIOUR + NETWORK INTELLIGENCE
+            # =================================================
 
             behaviour_col, network_col = (
                 st.columns(2)
@@ -484,6 +477,10 @@ elif page == "Customer Investigation":
 
             st.divider()
 
+            # =================================================
+            # WHY FLAGGED + GRAPH
+            # =================================================
+
             st.header(
                 "Why This Case Was Flagged"
             )
@@ -568,6 +565,119 @@ elif page == "Customer Investigation":
                     )
 
             st.divider()
+
+            # =================================================
+            # SHAP EXPLANATION
+            # =================================================
+
+            st.header(
+                "Top ML Risk Drivers"
+            )
+
+            st.caption(
+                "SHAP explains which customer features "
+                "contributed most strongly to the XGBoost "
+                "model's prediction."
+            )
+
+            shap_data = result.get(
+                "shap_explanation",
+                [],
+            )
+
+            if shap_data:
+
+                shap_rows = []
+
+                for item in shap_data:
+
+                    feature_name = (
+                        item[
+                            "feature"
+                        ]
+                        .replace(
+                            "_",
+                            " ",
+                        )
+                        .title()
+                    )
+
+                    feature_value = item[
+                        "feature_value"
+                    ]
+
+                    shap_value = item[
+                        "shap_value"
+                    ]
+
+                    direction = item[
+                        "direction"
+                    ]
+
+                    if direction == (
+                        "INCREASES_RISK"
+                    ):
+
+                        direction_display = (
+                            "⬆ Increases Risk"
+                        )
+
+                    else:
+
+                        direction_display = (
+                            "⬇ Decreases Risk"
+                        )
+
+                    shap_rows.append(
+                        {
+                            "Feature":
+                                feature_name,
+
+                            "Feature Value":
+                                round(
+                                    feature_value,
+                                    3,
+                                ),
+
+                            "SHAP Contribution":
+                                round(
+                                    shap_value,
+                                    3,
+                                ),
+
+                            "Direction":
+                                direction_display,
+                        }
+                    )
+
+                shap_df = pd.DataFrame(
+                    shap_rows
+                )
+
+                st.dataframe(
+                    shap_df,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                st.caption(
+                    "Positive SHAP values push the ML model "
+                    "toward higher abuse risk. Negative values "
+                    "push the prediction toward lower risk."
+                )
+
+            else:
+
+                st.info(
+                    "No SHAP explanation is available "
+                    "for this customer."
+                )
+
+            st.divider()
+
+            # =================================================
+            # RECOMMENDED ACTION
+            # =================================================
 
             st.header(
                 "Recommended Action"
@@ -719,7 +829,7 @@ elif page == "Live Return Evaluation":
             )
 
             # =================================================
-            # SAFE DISPLAY VALUES FOR NEW CUSTOMERS
+            # SAFE DISPLAY VALUES
             # =================================================
 
             if historical_score is None:
@@ -826,11 +936,11 @@ elif page == "Live Return Evaluation":
                 ],
             )
 
+            st.divider()
+
             # =================================================
             # EXTRA MODEL INFORMATION
             # =================================================
-
-            st.divider()
 
             model_col, status_col, basis_col = (
                 st.columns(3)
@@ -1100,9 +1210,7 @@ elif page == "Abuse Rings":
     if rings:
 
         ring_df = pd.DataFrame(
-            rings[
-                "rings"
-            ]
+            rings["rings"]
         )
 
         if not ring_df.empty:
@@ -1235,6 +1343,10 @@ elif page == "Model Performance":
 
         st.divider()
 
+        # =================================================
+        # FINANCIAL IMPACT
+        # =================================================
+
         st.subheader(
             "Financial Impact"
         )
@@ -1280,6 +1392,10 @@ elif page == "Model Performance":
         )
 
         st.divider()
+
+        # =================================================
+        # TEST OUTCOMES
+        # =================================================
 
         st.subheader(
             "Test Set Outcomes"
