@@ -28,49 +28,45 @@ OUTPUT_DIR = (
 )
 
 
+# =========================================================
+# LOAD DATA
+# =========================================================
+
 def load_data():
-    df = pd.read_csv(DATA_PATH)
-    rings = pd.read_csv(RINGS_PATH)
+
+    df = pd.read_csv(
+        DATA_PATH
+    )
+
+    rings = pd.read_csv(
+        RINGS_PATH
+    )
 
     return df, rings
 
 
-def get_top_ring(rings):
+# =========================================================
+# CLEAN MEMBER LIST
+# =========================================================
 
-    top_ring = (
-        rings
-        .sort_values(
-            "ring_risk_score",
-            ascending=False,
-        )
-        .iloc[0]
-    )
+def parse_members(
+    members_value,
+):
 
-    members = (
-        top_ring["members"]
-        .split(",")
-    )
+    members = [
+        member.strip()
+        for member in str(
+            members_value
+        ).split(",")
+        if member.strip()
+    ]
 
-    print(
-        "Visualizing:",
-        top_ring["detected_ring_id"],
-    )
+    return members
 
-    print(
-        "Risk score:",
-        round(
-            top_ring["ring_risk_score"],
-            2,
-        ),
-    )
 
-    print(
-        "Members:",
-        members,
-    )
-
-    return top_ring, members
-
+# =========================================================
+# BUILD GRAPH FOR ONE RING
+# =========================================================
 
 def build_ring_graph(
     df,
@@ -80,7 +76,9 @@ def build_ring_graph(
     graph = nx.Graph()
 
     member_df = df[
-        df["customer_id"].isin(
+        df[
+            "customer_id"
+        ].isin(
             members
         )
     ].copy()
@@ -91,6 +89,11 @@ def build_ring_graph(
         "payment_instrument_id": "payment",
     }
 
+
+    # -----------------------------------------------------
+    # ADD CUSTOMER NODES
+    # -----------------------------------------------------
+
     for customer in members:
 
         graph.add_node(
@@ -98,7 +101,19 @@ def build_ring_graph(
             node_type="customer",
         )
 
-    for column, node_type in identity_columns.items():
+
+    # -----------------------------------------------------
+    # ADD SHARED IDENTITY NODES
+    # -----------------------------------------------------
+
+    for (
+        column,
+        node_type,
+    ) in identity_columns.items():
+
+        if column not in member_df.columns:
+
+            continue
 
         temp = (
             member_df[
@@ -107,11 +122,14 @@ def build_ring_graph(
                     column,
                 ]
             ]
+            .dropna()
             .drop_duplicates()
         )
 
         identity_counts = (
-            temp.groupby(column)[
+            temp.groupby(
+                column
+            )[
                 "customer_id"
             ]
             .nunique()
@@ -125,18 +143,30 @@ def build_ring_graph(
         )
 
         temp = temp[
-            temp[column].isin(
+            temp[
+                column
+            ].isin(
                 shared_ids
             )
         ]
 
         for _, row in temp.iterrows():
 
-            customer = row["customer_id"]
-            identity = row[column]
+            customer = (
+                row[
+                    "customer_id"
+                ]
+            )
+
+            identity = str(
+                row[
+                    column
+                ]
+            )
 
             identity_node = (
-                f"{node_type.upper()}::{identity}"
+                f"{node_type.upper()}"
+                f"::{identity}"
             )
 
             graph.add_node(
@@ -154,6 +184,10 @@ def build_ring_graph(
     return graph
 
 
+# =========================================================
+# ADD CUSTOMER INFORMATION
+# =========================================================
+
 def add_customer_information(
     graph,
     df,
@@ -161,14 +195,18 @@ def add_customer_information(
 ):
 
     member_df = df[
-        df["customer_id"].isin(
+        df[
+            "customer_id"
+        ].isin(
             members
         )
     ].copy()
 
     summary = (
         member_df
-        .groupby("customer_id")
+        .groupby(
+            "customer_id"
+        )
         .agg(
             total_orders=(
                 "order_id",
@@ -189,12 +227,26 @@ def add_customer_information(
         )
     )
 
-    summary["return_rate"] = (
-        summary["returned_orders"]
-        / summary["total_orders"]
+    summary[
+        "return_rate"
+    ] = (
+        summary[
+            "returned_orders"
+        ]
+        / summary[
+            "total_orders"
+        ]
     )
 
+
     for customer in members:
+
+        if (
+            customer
+            not in summary.index
+        ):
+
+            continue
 
         row = summary.loc[
             customer
@@ -205,7 +257,9 @@ def add_customer_information(
         ][
             "return_rate"
         ] = float(
-            row["return_rate"]
+            row[
+                "return_rate"
+            ]
         )
 
         graph.nodes[
@@ -213,7 +267,9 @@ def add_customer_information(
         ][
             "total_return_cost"
         ] = float(
-            row["total_return_cost"]
+            row[
+                "total_return_cost"
+            ]
         )
 
         graph.nodes[
@@ -221,11 +277,17 @@ def add_customer_information(
         ][
             "is_abuse"
         ] = int(
-            row["is_abuse"]
+            row[
+                "is_abuse"
+            ]
         )
 
     return graph
 
+
+# =========================================================
+# CREATE VISUALIZATION FOR ONE RING
+# =========================================================
 
 def create_visualization(
     graph,
@@ -252,6 +314,11 @@ def create_visualization(
 
     net.barnes_hut()
 
+
+    # -----------------------------------------------------
+    # ADD NODES
+    # -----------------------------------------------------
+
     for node, data in graph.nodes(
         data=True
     ):
@@ -259,6 +326,11 @@ def create_visualization(
         node_type = data.get(
             "node_type"
         )
+
+
+        # -------------------------------------------------
+        # CUSTOMER NODE
+        # -------------------------------------------------
 
         if node_type == "customer":
 
@@ -276,12 +348,21 @@ def create_visualization(
                 )
             )
 
+            is_abuse = (
+                data.get(
+                    "is_abuse",
+                    0,
+                )
+            )
+
             title = (
                 f"Customer: {node}<br>"
                 f"Return rate: "
                 f"{return_rate:.1%}<br>"
                 f"Return value: "
-                f"₹{return_cost:,.2f}"
+                f"₹{return_cost:,.2f}<br>"
+                f"Known abuse label: "
+                f"{is_abuse}"
             )
 
             net.add_node(
@@ -292,13 +373,16 @@ def create_visualization(
                 size=28,
             )
 
+
+        # -------------------------------------------------
+        # IDENTITY NODE
+        # -------------------------------------------------
+
         else:
 
-            label = (
-                data.get(
-                    "label",
-                    node,
-                )
+            label = data.get(
+                "label",
+                node,
             )
 
             title = (
@@ -314,14 +398,23 @@ def create_visualization(
                 size=20,
             )
 
-    for source, target, data in graph.edges(
+
+    # -----------------------------------------------------
+    # ADD EDGES
+    # -----------------------------------------------------
+
+    for (
+        source,
+        target,
+        data,
+    ) in graph.edges(
         data=True
     ):
 
         relationship = (
             data.get(
                 "relationship",
-                ""
+                "",
             )
         )
 
@@ -330,6 +423,11 @@ def create_visualization(
             target,
             title=relationship,
         )
+
+
+    # -----------------------------------------------------
+    # NETWORK OPTIONS
+    # -----------------------------------------------------
 
     net.set_options(
         """
@@ -350,57 +448,157 @@ def create_visualization(
     )
 
     net.write_html(
-        str(output_path)
+        str(
+            output_path
+        )
     )
 
     print(
-        "\nSaved visualization to:"
+        f"Saved {ring_id} "
+        f"(risk={risk_score:.2f}) "
+        f"-> {output_path}"
     )
 
+    return output_path
+
+
+# =========================================================
+# GENERATE ALL RING VISUALIZATIONS
+# =========================================================
+
+def generate_all_ring_visualizations(
+    df,
+    rings,
+):
+
+    OUTPUT_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    generated = 0
+    skipped = 0
+
+    rings = rings.sort_values(
+        "ring_risk_score",
+        ascending=False,
+    )
+
+    print()
     print(
-        output_path
+        "Generating ReturnShield "
+        "ring visualizations..."
     )
-
     print(
-        "\nRing risk score:",
-        round(
-            risk_score,
-            2,
-        ),
+        f"Detected rings: {len(rings)}"
+    )
+    print()
+
+
+    for _, ring in rings.iterrows():
+
+        ring_id = str(
+            ring[
+                "detected_ring_id"
+            ]
+        )
+
+        risk_score = float(
+            ring[
+                "ring_risk_score"
+            ]
+        )
+
+        members = parse_members(
+            ring[
+                "members"
+            ]
+        )
+
+
+        # -------------------------------------------------
+        # VALIDATION
+        # -------------------------------------------------
+
+        if not members:
+
+            print(
+                f"Skipping {ring_id}: "
+                "no members found."
+            )
+
+            skipped += 1
+
+            continue
+
+
+        try:
+
+            graph = build_ring_graph(
+                df,
+                members,
+            )
+
+            graph = add_customer_information(
+                graph,
+                df,
+                members,
+            )
+
+            create_visualization(
+                graph,
+                ring_id,
+                risk_score,
+            )
+
+            generated += 1
+
+
+        except Exception as error:
+
+            print(
+                f"Could not generate "
+                f"{ring_id}: {error}"
+            )
+
+            skipped += 1
+
+
+    print()
+    print(
+        "================================="
+    )
+    print(
+        "GRAPH GENERATION COMPLETE"
+    )
+    print(
+        "================================="
+    )
+    print(
+        f"Generated: {generated}"
+    )
+    print(
+        f"Skipped:   {skipped}"
+    )
+    print(
+        f"Output:    {OUTPUT_DIR}"
     )
 
+
+# =========================================================
+# MAIN
+# =========================================================
 
 def main():
 
     df, rings = load_data()
 
-    top_ring, members = (
-        get_top_ring(
-            rings
-        )
-    )
-
-    graph = build_ring_graph(
+    generate_all_ring_visualizations(
         df,
-        members,
-    )
-
-    graph = add_customer_information(
-        graph,
-        df,
-        members,
-    )
-
-    create_visualization(
-        graph,
-        top_ring[
-            "detected_ring_id"
-        ],
-        top_ring[
-            "ring_risk_score"
-        ],
+        rings,
     )
 
 
 if __name__ == "__main__":
+
     main()
