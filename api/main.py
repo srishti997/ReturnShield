@@ -20,6 +20,13 @@ sys.path.append(
 
 from investigation.investigate import investigate
 
+from storage.database import (
+    initialize_database,
+    get_live_customer,
+    get_customer_return_history,
+    save_return_event,
+)
+
 
 # =========================================================
 # DATA PATHS
@@ -58,7 +65,7 @@ app = FastAPI(
         "network-risk analysis and explainable "
         "merchant return investigation."
     ),
-    version="1.0.0",
+    version="1.1.0",
 )
 
 
@@ -91,6 +98,13 @@ predictions_df = pd.read_csv(
 
 
 # =========================================================
+# INITIALIZE LIVE DATABASE
+# =========================================================
+
+initialize_database()
+
+
+# =========================================================
 # ROOT
 # =========================================================
 
@@ -100,7 +114,7 @@ def root():
     return {
         "service": "ReturnShield",
         "status": "running",
-        "version": "1.0.0",
+        "version": "1.1.0",
     }
 
 
@@ -122,6 +136,7 @@ def health():
         "test_predictions_loaded": len(
             predictions_df
         ),
+        "live_database": "connected",
     }
 
 
@@ -175,6 +190,8 @@ def customer_risk(
     customer_id: str,
 ):
 
+    customer_id = customer_id.strip()
+
     match = customers_df[
         customers_df[
             "customer_id"
@@ -186,8 +203,8 @@ def customer_risk(
         raise HTTPException(
             status_code=404,
             detail=(
-                f"Customer "
-                f"{customer_id} not found."
+                f"Customer {customer_id} "
+                "not found in historical dataset."
             ),
         )
 
@@ -260,13 +277,13 @@ def customer_investigation(
     customer_id: str,
 ):
 
+    customer_id = customer_id.strip()
+
     try:
 
-        result = investigate(
+        return investigate(
             customer_id
         )
-
-        return result
 
     except ValueError as error:
 
@@ -397,6 +414,8 @@ def get_ring(
     ring_id: str,
 ):
 
+    ring_id = ring_id.strip()
+
     match = rings_df[
         rings_df[
             "detected_ring_id"
@@ -408,8 +427,8 @@ def get_ring(
         raise HTTPException(
             status_code=404,
             detail=(
-                f"Ring "
-                f"{ring_id} not found."
+                f"Ring {ring_id} "
+                "not found."
             ),
         )
 
@@ -604,6 +623,7 @@ def risk_queue(
                 "risk_level"
             ] != risk_level
         ):
+
             continue
 
         results.append(
@@ -728,9 +748,29 @@ def evaluate_return(
     request: ReturnRequest,
 ):
 
-    # -----------------------------------------------------
-    # BASIC INPUT VALIDATION
-    # -----------------------------------------------------
+    # =====================================================
+    # INPUT VALIDATION
+    # =====================================================
+
+    customer_id = (
+        request.customer_id
+        .strip()
+    )
+
+    return_reason = (
+        request.return_reason
+        .strip()
+    )
+
+    if not customer_id:
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "customer_id cannot "
+                "be empty."
+            ),
+        )
 
     if request.order_value < 0:
 
@@ -752,24 +792,19 @@ def evaluate_return(
             ),
         )
 
-    customer_id = (
-        request.customer_id
-        .strip()
-    )
-
-    if not customer_id:
+    if not return_reason:
 
         raise HTTPException(
             status_code=400,
             detail=(
-                "customer_id cannot "
+                "return_reason cannot "
                 "be empty."
             ),
         )
 
 
     # =====================================================
-    # CHECK WHETHER CUSTOMER EXISTS
+    # CHECK HISTORICAL DATASET
     # =====================================================
 
     try:
@@ -778,48 +813,97 @@ def evaluate_return(
             customer_id
         )
 
-        customer_known = True
+        dataset_customer = True
 
     except ValueError:
 
         investigation = None
 
-        customer_known = False
+        dataset_customer = False
 
 
     # =====================================================
-    # BASE RISK
+    # CHECK LIVE DATABASE
+    # =====================================================
+
+    live_customer = None
+    live_history = []
+
+    if not dataset_customer:
+
+        live_customer = get_live_customer(
+            customer_id
+        )
+
+        if live_customer:
+
+            live_history = (
+                get_customer_return_history(
+                    customer_id
+                )
+            )
+
+
+    # =====================================================
+    # INITIAL VALUES
     # =====================================================
 
     evidence = []
 
-    if customer_known:
+    historical_risk_score = None
+    model_risk_score = None
+
+    ring_id = None
+    ring_score = None
+
+    prior_live_returns = len(
+        live_history
+    )
+
+    prior_live_return_value = sum(
+        float(
+            item[
+                "order_value"
+            ]
+        )
+        for item in live_history
+    )
+
+
+    # =====================================================
+    # TYPE 1 — HISTORICAL DATASET CUSTOMER
+    # =====================================================
+
+    if dataset_customer:
 
         customer_status = (
-            "EXISTING"
+            "EXISTING_DATASET_CUSTOMER"
         )
 
-        score = investigation[
-            "combined_score"
-        ]
-
-        evidence.extend(
+        score = float(
             investigation[
-                "evidence"
+                "combined_score"
             ]
         )
 
+        evidence.extend(
+            investigation.get(
+                "evidence",
+                [],
+            )
+        )
+
         historical_risk_score = round(
-            investigation[
-                "combined_score"
-            ] * 100,
+            score * 100,
             2,
         )
 
         model_risk_score = round(
-            investigation[
-                "ml_probability"
-            ] * 100,
+            float(
+                investigation[
+                    "ml_probability"
+                ]
+            ) * 100,
             2,
         )
 
@@ -831,29 +915,150 @@ def evaluate_return(
             "ring_score"
         ]
 
-    else:
+        decision_basis = (
+            "HISTORICAL_MODEL_PLUS_CURRENT_CONTEXT"
+        )
 
-        # -------------------------------------------------
-        # COLD-START CUSTOMER
-        # -------------------------------------------------
+
+    # =====================================================
+    # TYPE 2 — RETURNING LIVE CUSTOMER
+    # =====================================================
+
+    elif live_customer:
 
         customer_status = (
-            "NEW"
+            "RETURNING_LIVE_CUSTOMER"
         )
 
         score = 0.0
 
-        historical_risk_score = (
-            None
+        evidence.append(
+            "Customer has previous live "
+            "return activity in ReturnShield"
         )
 
-        model_risk_score = (
-            None
+        evidence.append(
+            f"{prior_live_returns} previous "
+            f"return request(s) recorded"
         )
 
-        ring_id = None
+        evidence.append(
+            f"Previous live return exposure: "
+            f"₹{prior_live_return_value:,.2f}"
+        )
 
-        ring_score = None
+
+        # -------------------------------------------------
+        # RETURN FREQUENCY
+        # -------------------------------------------------
+
+        if prior_live_returns >= 4:
+
+            score += 0.20
+
+            evidence.append(
+                "High number of previous "
+                "return requests"
+            )
+
+        elif prior_live_returns >= 2:
+
+            score += 0.10
+
+            evidence.append(
+                "Multiple previous return "
+                "requests recorded"
+            )
+
+        elif prior_live_returns >= 1:
+
+            score += 0.05
+
+
+        # -------------------------------------------------
+        # CUMULATIVE RETURN VALUE
+        # -------------------------------------------------
+
+        if prior_live_return_value >= 25000:
+
+            score += 0.20
+
+            evidence.append(
+                "High cumulative historical "
+                "return value"
+            )
+
+        elif prior_live_return_value >= 10000:
+
+            score += 0.10
+
+            evidence.append(
+                "Elevated cumulative historical "
+                "return value"
+            )
+
+
+        # -------------------------------------------------
+        # RAPID RETURN HISTORY
+        # -------------------------------------------------
+
+        if prior_live_returns > 0:
+
+            rapid_returns = sum(
+                1
+                for item in live_history
+                if int(
+                    item[
+                        "days_to_return"
+                    ]
+                ) <= 3
+            )
+
+            rapid_return_ratio = (
+                rapid_returns
+                / prior_live_returns
+            )
+
+            if rapid_return_ratio >= 0.75:
+
+                score += 0.15
+
+                evidence.append(
+                    "Most previous live returns "
+                    "were requested within 3 days"
+                )
+
+            elif rapid_return_ratio >= 0.50:
+
+                score += 0.10
+
+                evidence.append(
+                    "Frequent rapid-return "
+                    "behaviour detected"
+                )
+
+
+        historical_risk_score = round(
+            score * 100,
+            2,
+        )
+
+        decision_basis = (
+            "LIVE_HISTORY_PLUS_CURRENT_CONTEXT"
+        )
+
+
+    # =====================================================
+    # TYPE 3 — BRAND-NEW CUSTOMER
+    # =====================================================
+
+    else:
+
+        customer_status = (
+            "NEW_CUSTOMER"
+        )
+
+        score = 0.0
 
         evidence.append(
             "New customer — no historical "
@@ -868,6 +1073,10 @@ def evaluate_return(
         evidence.append(
             "No known account-network "
             "history available"
+        )
+
+        decision_basis = (
+            "COLD_START_CURRENT_CONTEXT"
         )
 
 
@@ -900,8 +1109,7 @@ def evaluate_return(
 
         evidence.append(
             f"Return requested within "
-            f"{request.days_to_return} "
-            f"days"
+            f"{request.days_to_return} days"
         )
 
 
@@ -914,8 +1122,7 @@ def evaluate_return(
         score += 0.30
 
         evidence.append(
-            f"Very high-value return "
-            f"request "
+            "Very high-value return request "
             f"(₹{request.order_value:,.2f})"
         )
 
@@ -924,7 +1131,7 @@ def evaluate_return(
         score += 0.25
 
         evidence.append(
-            f"High-value return request "
+            "High-value return request "
             f"(₹{request.order_value:,.2f})"
         )
 
@@ -933,8 +1140,7 @@ def evaluate_return(
         score += 0.12
 
         evidence.append(
-            f"Elevated-value return "
-            f"request "
+            "Elevated-value return request "
             f"(₹{request.order_value:,.2f})"
         )
 
@@ -943,25 +1149,21 @@ def evaluate_return(
         score += 0.05
 
         evidence.append(
-            f"Moderate-value return "
-            f"request "
+            "Moderate-value return request "
             f"(₹{request.order_value:,.2f})"
         )
 
 
     # =====================================================
-    # RETURN REASON
+    # CURRENT RETURN — REASON
     # =====================================================
 
     normalized_reason = (
-        request.return_reason
-        .strip()
+        return_reason
         .lower()
     )
 
-    if normalized_reason == (
-        "changed mind"
-    ):
+    if normalized_reason == "changed mind":
 
         score += 0.08
 
@@ -970,27 +1172,21 @@ def evaluate_return(
             "'Changed Mind'"
         )
 
-    elif normalized_reason == (
-        "defective"
-    ):
+    elif normalized_reason == "defective":
 
         evidence.append(
             "Return reason is "
             "'Defective'"
         )
 
-    elif normalized_reason == (
-        "wrong item"
-    ):
+    elif normalized_reason == "wrong item":
 
         evidence.append(
             "Return reason is "
             "'Wrong Item'"
         )
 
-    elif normalized_reason == (
-        "size issue"
-    ):
+    elif normalized_reason == "size issue":
 
         evidence.append(
             "Return reason is "
@@ -1000,13 +1196,12 @@ def evaluate_return(
     else:
 
         evidence.append(
-            "Other return reason "
-            "provided"
+            "Other return reason provided"
         )
 
 
     # =====================================================
-    # KEEP SCORE WITHIN 0–1
+    # KEEP SCORE BETWEEN 0 AND 1
     # =====================================================
 
     score = min(
@@ -1060,7 +1255,26 @@ def evaluate_return(
 
 
     # =====================================================
-    # FINAL RESPONSE
+    # SAVE RETURN TO LIVE DATABASE
+    # =====================================================
+
+    final_score = round(
+        score * 100,
+        2,
+    )
+
+    save_return_event(
+        customer_id=customer_id,
+        order_value=request.order_value,
+        return_reason=return_reason,
+        days_to_return=request.days_to_return,
+        risk_score=final_score,
+        risk_level=risk_level,
+    )
+
+
+    # =====================================================
+    # RESPONSE
     # =====================================================
 
     return {
@@ -1075,7 +1289,7 @@ def evaluate_return(
             request.order_value,
 
         "return_reason":
-            request.return_reason,
+            return_reason,
 
         "days_to_return":
             request.days_to_return,
@@ -1087,10 +1301,7 @@ def evaluate_return(
             model_risk_score,
 
         "final_return_risk_score":
-            round(
-                score * 100,
-                2,
-            ),
+            final_score,
 
         "risk_level":
             risk_level,
@@ -1101,6 +1312,15 @@ def evaluate_return(
         "ring_score":
             ring_score,
 
+        "prior_live_return_requests":
+            prior_live_returns,
+
+        "prior_live_return_value":
+            round(
+                prior_live_return_value,
+                2,
+            ),
+
         "evidence":
             evidence,
 
@@ -1108,9 +1328,5 @@ def evaluate_return(
             recommendation,
 
         "decision_basis":
-            (
-                "HISTORICAL_MODEL_PLUS_CURRENT_CONTEXT"
-                if customer_known
-                else "COLD_START_CURRENT_CONTEXT"
-            ),
+            decision_basis,
     }
